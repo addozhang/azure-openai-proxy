@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  azure-openai-proxy:
+    build: .
+    container_name: azure-openai-proxy
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Azure AD authentication configuration
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+
+      # Azure OpenAI configuration
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2024-02-01}
+
+      # Service configuration
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-8000}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # Optional configuration
+      - REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-60}
+      - AZURE_OPENAI_MAX_TOKENS=${AZURE_OPENAI_MAX_TOKENS:-4000}
+      - AZURE_OPENAI_TEMPERATURE=${AZURE_OPENAI_TEMPERATURE:-0.7}
+
+    env_file:
+      - .env
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Log configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Network configuration
+networks:
+  default:
+    name: azure-openai-proxy-network
+    driver: bridge
