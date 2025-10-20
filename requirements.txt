@@ -34,5 +34,8 @@ flake8==6.1.0
 # Monitoring and logging
 structlog==23.2.0
 
+# Retry mechanism
+tenacity==8.2.3
+
 # Optional: Performance monitoring
 # gunicorn==21.2.0

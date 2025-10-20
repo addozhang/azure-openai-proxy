@@ -15,7 +15,7 @@ os.environ.update({
     "AZURE_CLIENT_SECRET": "test-client-secret",
     "AZURE_TENANT_ID": "test-tenant-id",
     "AZURE_OPENAI_ENDPOINT": "https://test.openai.azure.com/",
-    "AZURE_OPENAI_DEPLOYMENT": "gpt-4o",
+    "AZURE_OPENAI_DEPLOYMENT": "gpt-4o-mini",
     "AZURE_OPENAI_API_VERSION": "2024-02-01",
     "HOST": "127.0.0.1",
     "PORT": "8000",
@@ -34,7 +34,7 @@ class TestConfig:
         assert settings.azure_client_secret == "test-client-secret"
         assert settings.azure_tenant_id == "test-tenant-id"
         assert settings.azure_openai_endpoint == "https://test.openai.azure.com/"
-        assert settings.azure_openai_deployment == "gpt-4o"
+        assert settings.azure_openai_deployment == "gpt-4o-mini"
         assert settings.host == "127.0.0.1"
         assert settings.port == 8000
 
@@ -139,7 +139,7 @@ class TestAPIEndpoints:
         data = response.json()
         assert data["object"] == "list"
         assert len(data["data"]) == 1
-        assert data["data"][0]["id"] == "gpt-4o"
+        assert data["data"][0]["id"] == "gpt-4o-mini"
         assert data["data"][0]["owned_by"] == "azure-openai"
 
 
@@ -158,7 +158,7 @@ class TestChatCompletions:
                 "id": "test-id",
                 "object": "chat.completion",
                 "created": 1234567890,
-                "model": "gpt-4o",
+                "model": "gpt-4o-mini",
                 "choices": [
                     {
                         "index": 0,
@@ -179,7 +179,7 @@ class TestChatCompletions:
             mock_get_client.return_value = mock_client
 
             request_data = {
-                "model": "gpt-4o",
+                "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "Hello"}],
                 "max_tokens": 100,
                 "temperature": 0.7
@@ -208,7 +208,7 @@ class TestChatCompletions:
             mock_get_client.return_value = mock_client
 
             request_data = {
-                "model": "gpt-4o",
+                "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "Hello"}],
                 "stream": True
             }
@@ -226,7 +226,7 @@ class TestChatCompletions:
             mock_get_client.side_effect = Exception("Connection failed")
 
             request_data = {
-                "model": "gpt-4o",
+                "model": "gpt-4o-mini",
                 "messages": [{"role": "user", "content": "Hello"}]
             }
 
@@ -272,7 +272,7 @@ class TestIntegration:
         # client = TestClient(app)
         #
         # request_data = {
-        #     "model": "gpt-4o",
+        #     "model": "gpt-4o-mini",
         #     "messages": [{"role": "user", "content": "Hello, Azure OpenAI!"}],
         #     "max_tokens": 50
         # }

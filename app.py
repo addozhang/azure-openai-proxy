@@ -6,8 +6,12 @@ Provides OpenAI API-compatible proxy service with Azure AD authentication for Az
 
 import asyncio
 import logging
+import hashlib
+import json
+import time
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
+from collections import defaultdict
 from functools import lru_cache
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -17,6 +21,7 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 from azure.identity import ClientSecretCredential
 from openai import AzureOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import uvicorn
 
 # Configure logging
@@ -60,7 +65,14 @@ settings = Settings()
 
 # Azure AD credential client cache
 _azure_credential: Optional[ClientSecretCredential] = None
-_openai_client: Optional[AzureOpenAI] = None
+
+# Request deduplication cache
+_request_cache: Dict[str, Any] = {}
+_cache_timestamps: Dict[str, float] = {}
+
+# Rate limiting
+_request_counts: Dict[str, int] = defaultdict(int)
+_last_reset_time: float = time.time()
 
 
 def get_azure_credential() -> ClientSecretCredential:
@@ -75,9 +87,8 @@ def get_azure_credential() -> ClientSecretCredential:
     return _azure_credential
 
 
-@lru_cache(maxsize=1)
 def get_openai_client() -> AzureOpenAI:
-    """Get Azure OpenAI client with caching"""
+    """Get Azure OpenAI client without caching to avoid rate limiting issues"""
     credential = get_azure_credential()
 
     def token_provider():
@@ -89,6 +100,68 @@ def get_openai_client() -> AzureOpenAI:
         azure_ad_token_provider=token_provider,
         api_version=settings.azure_openai_api_version
     )
+
+
+def get_cache_key(messages: list, model: str, max_tokens: int, temperature: float) -> str:
+    """Generate cache key for request deduplication"""
+    content = json.dumps({
+        "messages": messages,
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature
+    }, sort_keys=True)
+    return hashlib.md5(content.encode()).hexdigest()
+
+
+def check_rate_limit() -> bool:
+    """Check if request should be rate limited"""
+    global _request_counts, _last_reset_time
+
+    current_time = time.time()
+
+    # Reset counter every minute
+    if current_time - _last_reset_time >= 60:
+        _request_counts.clear()
+        _last_reset_time = current_time
+
+    # Simple rate limiting: max 50 requests per minute
+    if _request_counts["total"] >= 50:
+        return False
+
+    _request_counts["total"] += 1
+    return True
+
+
+def get_cached_response(cache_key: str) -> Optional[Any]:
+    """Get cached response if available and not expired"""
+    if cache_key in _request_cache:
+        cache_time = _cache_timestamps.get(cache_key, 0)
+        # Cache for 5 minutes
+        if time.time() - cache_time < 300:
+            logger.info(f"Returning cached response for key: {cache_key[:8]}...")
+            return _request_cache[cache_key]
+
+        # Remove expired cache
+        del _request_cache[cache_key]
+        del _cache_timestamps[cache_key]
+
+    return None
+
+
+def cache_response(cache_key: str, response: Any):
+    """Cache response for future use"""
+    _request_cache[cache_key] = response
+    _cache_timestamps[cache_key] = time.time()
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(Exception)
+)
+def create_chat_completion(client: AzureOpenAI, params: dict):
+    """Create chat completion with retry mechanism"""
+    return client.chat.completions.create(**params)
 
 
 @asynccontextmanager
@@ -177,9 +250,25 @@ async def list_models():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
-    """Chat completions endpoint"""
+    """Chat completions endpoint with caching and rate limiting"""
     try:
-        # Get Azure OpenAI client
+        # Check rate limit
+        if not check_rate_limit():
+            logger.warning("Rate limit exceeded, returning 429")
+            raise HTTPException(status_code=429, detail="Too Many Requests")
+
+        # Check cache for identical requests
+        cache_key = get_cache_key(
+            request.messages,
+            request.model,
+            request.max_tokens or 1000,
+            request.temperature
+        )
+        cached_response = get_cached_response(cache_key)
+        if cached_response:
+            return cached_response
+
+        # Get Azure OpenAI client (new instance each time)
         client = get_openai_client()
 
         # Prepare request parameters
@@ -188,17 +277,26 @@ async def chat_completions(request: ChatCompletionRequest):
 
         # Handle streaming requests
         if request.stream:
-            return StreamingResponse(
+            # Don't cache streaming responses as they are generators
+            response = StreamingResponse(
                 stream_chat_response(client, params),
                 media_type="text/plain"
             )
+            return response
 
-        # Handle regular requests
-        response = client.chat.completions.create(**params)
+        # Handle regular requests with retry
+        response = create_chat_completion(client, params)
+
+        # Cache successful responses
+        cache_response(cache_key, response)
+
         return response
 
     except Exception as e:
         logger.error(f"Chat completion request failed: {e}")
+        # Handle specific Azure OpenAI rate limit errors
+        if "429" in str(e) or "Too Many Requests" in str(e):
+            raise HTTPException(status_code=429, detail="Azure OpenAI rate limit exceeded")
         raise HTTPException(status_code=500, detail=str(e))
 
 
